@@ -6,6 +6,7 @@ import multiprocessing as mp
 from multiprocessing import Manager
 
 import os
+# import csv
 from pathlib import Path
 from random import sample, choices, shuffle, randint as ri
 
@@ -26,17 +27,19 @@ class Game:
         self.font, self.bg = None, None
         self.gf, self.sf = None, None
 
+        # Timer
         self.turn_len = 60
         self.t_font = None
         self.t_x, self.t_y = (self.W - self.W // 5), (self.H - self.H // 5)
         self.t_rect = pg.Rect(self.t_x, self.t_y, self.W - self.t_x, self.H - self.t_y)
-        print(self.t_x, self.t_y, self.W - self.t_x, self.H - self.t_y)
         self.st_color, self.end_color = COLS['green'], (250, 79, 48)
 
-        self.ban_w, self.ban_h = self.W * 0.73, self.H * 0.12
-        self.ban_x, self.ban_y = (self.W * 0.78 - self.ban_w) // 2, (self.H - self.ban_h) // 2
+        # Banner
+        self.ban_w, self.ban_h = Card.C_SPACE[1] * 0.93, Card.C_SPACE[0] * 0.12
+        self.ban_x, self.ban_y = ((Card.C_SPACE[1] + 4 * Card.C_SP - self.ban_w) // 2,
+                                  (Card.C_SPACE[0] - self.ban_h) // 2)
         self.ban_rect = pg.Rect(self.ban_x, self.ban_y, self.ban_w, self.ban_h)
-        self.win_ban, self.ban_font = None, None
+        self.win_ban, self.ban_font, self.pause_surf, self.pause_rect = None, None, None, None
         self.ban_lock = False
 
     def set_font(self):
@@ -56,15 +59,22 @@ class Game:
         self.win_ban.set_alpha(200)
         self.win_ban.fill((0, 0, 0), None, pg.BLEND_RGBA_MULT)
 
-    def set_clock(self):
-        pass
+        ### Pause Banner ###
+        pause_text = 'павуза\t'.upper() * 5
+        self.pause_surf = self.font.render(pause_text[:-1], True, COLS['red'])
+        self.pause_rect = self.pause_surf.get_rect(center=self.ban_rect.center)
+
+    # def write_score(self, data):
+    #     with open('./source/score_table.csv', mode='r+', newline='') as scores:
+    #         writer = csv.writer(scores)
+    #         # Write the data to the CSV file
+    #         writer.writerows(data)
 
     def win_set(self):
         self.set_font(), self.set_bg(), self.set_ban(), self.set_timer_font()
 
-    def game_field(self, run, lock, active, rest, _words, _colors, _icons, g_news, timer):
-        # Initialize Pygame
-        pg.init()
+    def game_field(self, run, lock, active, rest, _words, _colors, _icons, g_news, timer, pause):
+        pg.init()  # Initialize Pygame
 
         ### Sounds ###
         succ_snd = pg.mixer.Sound('./source/snd/success.ogg')
@@ -93,7 +103,7 @@ class Game:
         filler(Card.ALL_CARDS, _words, _colors, _icons, _hide_img)
 
         winner = {}
-        clock, start_turn, pause, time_in_pause = pg.time.Clock(), None, True, 0
+        clock, start_turn, time_in_pause = pg.time.Clock(), None, 0
 
         while run.value:
             for ev in pg.event.get():
@@ -110,26 +120,27 @@ class Game:
             if pressed_keys[K_r]:
                 restart_snd.play()
                 reset_restart(rest, lock)  # Open the restart gate
-                pg.time.delay(1000)
-            if pressed_keys[K_SPACE]:
-                if pause:
-                    # Resume the timer, subtract the paused time from the time in pause.
-                    resume_snd.play() if start_turn else start_snd.play()
-                    start_turn = pg.time.get_ticks() - time_in_pause
-                else:
-                    # Pause the timer and store the elapsed time so far.
-                    pause_snd.play()
-                    time_in_pause = pg.time.get_ticks() - start_turn
-                pause = not pause
-                pg.time.delay(500)
-            if pressed_keys[K_s]:
-                # Skip turn.
-                switch_snd.play()
-                switch_turn(active)
-                pg.time.delay(500)
+                pg.time.delay(1800)
+            if not winner:
+                if pressed_keys[K_SPACE]:
+                    if pause.value:
+                        # Resume the timer, subtract the paused time from the time in pause.
+                        resume_snd.play() if start_turn else start_snd.play()
+                        start_turn = pg.time.get_ticks() - time_in_pause
+                    else:
+                        # Pause the timer and store the elapsed time so far.
+                        pause_snd.play()
+                        time_in_pause = pg.time.get_ticks() - start_turn
+                    with lock:
+                        pause.value = not pause.value
+                    pg.time.delay(500)
+                if pressed_keys[K_s]:  # Skip turn.
+                    switch_snd.play()
+                    switch_turn(active)
+                    pg.time.delay(500)
 
             # Check for mouse click.
-            if not pause:
+            if not pause.value:
                 mouse_pressed = pg.mouse.get_pressed()
                 if mouse_pressed[0] and not winner:  # Left mouse button
                     mouse_pos = pg.mouse.get_pos()
@@ -145,8 +156,7 @@ class Game:
                                 winner_team_objs = get_winner_objs(act_cards, act_team)
                                 winner = get_winner_info(winner, winner_team_objs, g_news, lock)
                                 break
-                            elif (card.color_name == 'gold' and
-                                    len([c for t, c in act_cards.items() if t in Team.COLS]) == Team.T_NUM):
+                            if card.color_name == 'gold':
                                 open_count = 0
                                 shuffle(Card.ALL_CARDS)
                                 for b_card in Card.ALL_CARDS:
@@ -159,8 +169,14 @@ class Game:
                                         open_count += 1
                                         print(f'Команда {act_team.name} відкрила "{b_card.color_name}" картку')
 
-                            flow = [c for t, c in act_cards.items() if t in Team.COLS]
-                            if len(flow) >= 2:  # 2 is minimal number of teams.
+                            flow = [(t, c) for t, c in act_cards.items() if t in Team.COLS]
+                            col_in_game = [col for col, num in flow]
+                            for num, c in enumerate(Team.COLS):
+                                if c not in col_in_game:
+                                    active[num] = None
+                                    reculc_icons(active)
+                            # print(Team.COLS, flow, active)
+                            if len(flow) >= 2:  # 2 is minimal number of teams
                                 if card.color_name in (act_team.color_name, 'l_grey'):
                                     wrong_snd.play()
                                     switch_turn(active)
@@ -174,11 +190,12 @@ class Game:
                                 vic_ch = vic_snd.play()
                                 break
 
-            if not not rest.value:
+            if rest.value:
                 filler(Card.ALL_CARDS, _words, _colors, _icons, _hide_img)
-                winner, self.ban_lock = {}, False  # reset winner and ban_lock.
-                start_turn, pause, timer.value = None, True, 60  # reset the timer.
-                reset_restart(rest, lock)  # Close the restart gate.
+                winner, self.ban_lock = {}, False  # reset winner and ban_lock
+                start_turn, pause.value, timer.value = None, True, 60  # reset the timer
+                reset_restart(rest, lock)  # Close the restart gate
+                reculc_icons(active)
 
             # Drawing and rendering for main window.
             self.gf.blit(self.bg, (0, 0))
@@ -196,20 +213,24 @@ class Game:
                         # Blit the text onto the square
                         self.gf.blit(word_surf, word_rect)
 
-                for team, act in zip(teams, active):
-                    self.gf.blit(team.icon, (team.x, team.y))
-                    if not act:
-                        self.gf.blit(Team.cover, (team.x, team.y))
+                if pause.value:  # Display the pause banner
+                    self.gf.blit(self.win_ban, (self.ban_x, self.ban_y))
+                    self.gf.blit(self.pause_surf, self.pause_rect)
 
-                # Timer
-                if not pause:
-                    # Calculate the time for turn.
+                for team, act in zip(teams, active):
+                    if act is not None:
+                        self.gf.blit(team.icon, (team.x, team.y))
+                        if not act:
+                            self.gf.blit(Team.cover, (team.x, team.y))
+
+                if not pause.value:
+                    # Timer. Calculate the time for turn.
                     cur_time = pg.time.get_ticks()
                     elapsed_time = (cur_time - start_turn) // 1000  # Elapsed time in seconds.
                     timer.value = max(self.turn_len - elapsed_time, 0)  # Calculate remaining time
 
                 if timer.value >= 1:
-                    time_str, color = get_timer_info(timer.value, self)
+                    time_str, color = get_timer_info(timer.value, self, pause)
                     timer_surf = self.t_font.render(time_str, True, color)
                     tim_rect = timer_surf.get_rect(center=self.t_rect.center)
                     self.gf.blit(timer_surf, tim_rect)
@@ -225,20 +246,20 @@ class Game:
                 self.gf.blit(self.win_ban, (self.ban_x, self.ban_y))
                 # Create banner text surface
                 if not self.ban_lock:
-                    if isinstance(winner["name"], list):
-                        gret_text = ''
-                        for name in winner["name"]:
-                            gret_text += f'«{name}»'
+                    if isinstance(winner['name'], list):
+                        gret_text, len_win = '', len(winner['name'])
+                        for num, name in enumerate(winner['name']):
+                            divider = ' ' if num == len_win - 1 else ', ' if num != len_win - 2 else ' та '
+                            gret_text += f'«{name}»{divider}'
                         gret_text += 'перемогли!'
-                        gret_text.replace('»«', '» та «')
                     else:
                         gret_text = f'«{winner["name"]}» перемогла!'
+                    print(gret_text)  # Print text about winner/-s
                     gret_surf = self.ban_font.render(gret_text, True, COLS['white'])
                     gret_rect = gret_surf.get_rect(center=self.ban_rect.center)
                     self.ban_lock = True
 
-                # Blit the text onto the banner
-                self.gf.blit(gret_surf, gret_rect)
+                self.gf.blit(gret_surf, gret_rect)  # Blit the text onto the winner banner
 
                 # Display winner team or teams
                 if isinstance(winner['icon'], list):
@@ -253,9 +274,8 @@ class Game:
         # Quit Pygame
         pg.quit()
 
-    def speaker_field(self, run, lock, active, rest, _words, _colors, _icons, g_news, timer):
-        # Initialize Pygame
-        pg.init()
+    def speaker_field(self, run, lock, active, rest, _words, _colors, _icons, g_news, timer, pause):
+        pg.init()  # Initialize Pygame
 
         # Set the dimensions of the second window
         self.sf = pg.display.set_mode(self.win, self.wflag)
@@ -282,13 +302,12 @@ class Game:
                 with lock:
                     run.value = not run.value
 
-            if not not rest.value:
+            if rest.value:
                 reset_round(active, lock, _words, _colors, _icons, g_news, _hide_img)
                 filler(Card.ALL_CARDS, _words, _colors, _icons, _hide_img)
                 self.ban_lock = False
                 pg.time.delay(1000)
 
-            # Drawing and rendering for second window
             self.sf.blit(self.bg, (0, 0))
 
             for card in Card.ALL_CARDS:
@@ -308,28 +327,34 @@ class Game:
                     self.sf.blit(word_surf, word_rect)
                 else:
                     self.sf.blit(card.true_icon, (card.x, card.y))
+
+            if pause.value:  # Display the pause banner
+                self.sf.blit(self.win_ban, (self.ban_x, self.ban_y))
+                self.sf.blit(self.pause_surf, self.pause_rect)
+
             if not g_news.value:
                 for team, act in zip(teams, active):
                     self.sf.blit(team.icon, (team.x, team.y))
                     if not act:
                         self.sf.blit(Team.cover, (team.x, team.y))
 
-                time_str, color = get_timer_info(timer.value, self)
+                time_str, color = get_timer_info(timer.value, self, pause)
                 timer_surf = self.t_font.render(time_str, True, color)
                 tim_rect = timer_surf.get_rect(center=self.t_rect.center)
                 self.sf.blit(timer_surf, tim_rect)
-
             else:
                 if not self.ban_lock:
-                    winner_team_objs = [t for t in teams if t.name in g_news.value][0]
+                    winner_team_objs = [t for t in teams if t.name in g_news.value]
                     winner = get_winner_info(winner, winner_team_objs, g_news, lock)
-                    if isinstance(winner["name"], list):
-                        gret_text = ''
-                        for name in winner["name"]:
-                            gret_text += f'«{name}»'
+                    if isinstance(winner['name'], list):
+                        gret_text, len_win = '', len(winner['name'])
+                        for num, name in enumerate(winner['name']):
+                            divider = ' ' if num == len_win - 1 else ', ' if num != len_win - 2 else ' та '
+                            gret_text += f'«{name}»{divider}'
                         gret_text += 'перемогли!'
                     else:
                         gret_text = f'«{winner["name"]}» перемогла!'
+                    gret_text = gret_text.replace('» «', '» та «')
                     gret_surf = self.ban_font.render(gret_text, True, COLS['white'])
                     gret_rect = gret_surf.get_rect(center=self.ban_rect.center)
                     self.ban_lock = True
@@ -360,11 +385,17 @@ def fst_move(n):
 
 def switch_turn(turns):
     proxy = [*turns]
-    act_ind = proxy.index(1)
-    nex_ind = 0 if act_ind + 1 == Team.T_NUM else act_ind + 1
-    for n_turn, turn in enumerate(turns):
-        if n_turn in (act_ind, nex_ind):
-            turns[n_turn] = not turn
+    act_ind = proxy.index(True)
+    nex_ind = pick_next(act_ind)
+    while turns[nex_ind] is None:
+        nex_ind = pick_next(nex_ind)
+    for num_turn, turn in enumerate(turns):
+        if num_turn in (act_ind, nex_ind):
+            turns[num_turn] = not turn
+
+
+def pick_next(ind):
+    return 0 if ind + 1 == Team.T_NUM else ind + 1
 
 
 def reset_turn(turns):
@@ -381,7 +412,6 @@ def reset_round(act, __lock, ___words, ___colors, ___icons, ___g_news, ___hide_i
 def reset_restart(restart_key, _lock):
     with _lock:
         restart_key.value = not restart_key.value
-    # return restart_key
 
 
 def set_good_news(__g_news, __lock, value):
@@ -389,9 +419,9 @@ def set_good_news(__g_news, __lock, value):
         __g_news.value = value
 
 
-def get_timer_info(t_val, _game):
+def get_timer_info(t_val, _game, _pause):
     _time_str = f'{t_val}'  # if t_val <= 9 else f'{t_val}'
-    if t_val == ri(0, 5):  # or t_val == ri(60, 61):
+    if t_val == ri(0, 5) or _pause.value:  # or t_val == ri(60, 61):
         _color = COLS['red']
     # elif t_val <= 59:
     #     color_progress = 1.0 - (t_val / _game.turn_len)
@@ -406,6 +436,7 @@ def get_timer_info(t_val, _game):
 
 
 def get_winner_objs(act_c, act_t, flag=False):
+    print(*act_c.items(), sep='\n\t')
     if not flag:
         filtered_list = [(key, val) for key, val in list(act_c.items())
                          if key in Team.COLS and key != act_t.color_name]
@@ -440,17 +471,16 @@ def get_winner_info(_winner, team_obj, _g_news, _lock):
 
 
 class Team:
-    T_NUM = 2
+    T_NUM = 3
     T_SPACE = Game.H - Game.H // 5, Game.W // 5
     T_SP = 20  # space between icons
+
     T_H, T_W = (T_SPACE[0] - (T_NUM + 1) * T_SP) // T_NUM, T_SPACE[1] - 2 * T_SP
     T_D = min(T_H, T_W)  # team icon diameter
     T_NAMES = {'purple': 'Пантера', 'orange': 'Фенікс', 'blue': 'Яструб', 'pink': 'Валькірія'}
     # T_NAMES = {'purple': 'Пантера', 'orange': 'Фенікс', 'blue': 'Яструб', 'pink': 'Валькірія'}
     ALL_INST, COLS = [], []
-
-    cover = pg.Surface((T_D, T_D), pg.SRCALPHA)
-    pg.draw.circle(cover, (0, 0, 0, 215), (T_D//2 + 1, T_D//2 + 1), T_D//1.98)
+    cover = None
 
     def __init__(self, color, ind):
         self.name, self.ind = self.T_NAMES[color], ind
@@ -458,16 +488,31 @@ class Team:
         self.icon, self.x, self.y, self.rect = None, None, None, None
         Team.ALL_INST.append(self)
         Team.COLS.append(self.color_name)
+        self.upd_cover()
 
-    def set_icon(self):
+    def icon_diameter(self, t_num=T_NUM):
+        t_h, t_w = (self.T_SPACE[0] - (t_num + 1) * self.T_SP) // t_num, self.T_SPACE[1] - 2 * Team.T_SP
+        self.T_D = min(t_h, t_w)
+
+    def set_icon(self, new_t_num=T_NUM):
         i_size, i_space = self.T_D, self.T_SP
         f_h, f_w = self.T_SPACE[0], Game.W - self.T_SPACE[1] + (self.T_SPACE[1] - i_size) // 2
         icon_path = f'./source/icons/{self.color_name}_icon.png'
         self.icon = pg.transform.scale(pg.image.load(icon_path).convert_alpha(), (i_size, i_size))
         self.x = f_w
-        self.y = (f_h - (i_size * self.T_NUM + i_space * (self.T_NUM - 1)) + self.ind * (i_size + i_space))
+        self.y = (f_h - (i_size * new_t_num + i_space * (new_t_num - 1)) + self.ind * (i_size + i_space))
         self.rect = pg.Rect(self.x, self.y, i_size, i_size)
         return self
+
+    def upd_cover(self):
+        Team.cover = pg.Surface((self.T_D, self.T_D), pg.SRCALPHA)
+        pg.draw.circle(Team.cover, (0, 0, 0, 215), (self.T_D // 2 + 1, self.T_D // 2 + 1), self.T_D // 1.98)
+
+    def update(self, new_t_num, got_ind):
+        self.icon_diameter(new_t_num)
+        self.ind = got_ind
+        self.set_icon(new_t_num)
+        self.upd_cover()
 
 
 def gen_teams():
@@ -476,14 +521,19 @@ def gen_teams():
     return Team.ALL_INST
 
 
-def get_team(cur_pos, flag=None):
+def get_team(cur_pos):
     for team, pos in zip(Team.ALL_INST, cur_pos):
-        if not flag:
-            if pos:
-                return team
-        else:
-            if not pos:
-                return team
+        if pos:
+            return team
+
+
+def reculc_icons(cur_pos):
+    new_team_qty = len([pos for pos in cur_pos if pos is not None])
+    new_ind = 0
+    for team, pos in zip(Team.ALL_INST, cur_pos):
+        if pos is not None:
+            team.update(new_team_qty, new_ind)
+            new_ind += 1
 
 
 class Card:
@@ -493,7 +543,7 @@ class Card:
     C_QTY = CARDS4TEAMS[Team.T_NUM]
     C_ROW = round(sqrt(C_QTY))
     C_SP = 10
-    C_W = round(((C_SPACE[1] - C_ROW * C_SP - 7 * C_SP) // C_ROW))
+    C_W = (C_SPACE[1] - C_ROW * C_SP - 3 * C_SP) // C_ROW
     C_H = round(C_W * (9 / 16))
 
     ICONS = get_files(f'./source/agents/')
@@ -501,7 +551,8 @@ class Card:
     def __init__(self, poss):
         _row, _col, = poss
         c_w, c_h, c_sp, el_in_row = Card.C_W, Card.C_H, Card.C_SP, Card.C_ROW
-        self.x = (Card.C_SPACE[1] - (c_w * el_in_row + c_sp * (el_in_row - 1))) // 2 + _col * (c_w + c_sp)
+        # (f_h - (i_size * new_t_num + i_space * (new_t_num - 1)) + self.ind * (i_size + i_space))
+        self.x = (Card.C_SPACE[1] - (c_w * el_in_row + c_sp * (el_in_row - 1))) + _col * (c_w + c_sp)
         self.y = (Card.C_SPACE[0] - (c_h * el_in_row + c_sp * (el_in_row - 1))) // 2 + _row * (c_h + c_sp)
         self.rect = pg.Rect(self.x, self.y, c_w, c_h)
         self.color_name, self.color_value = None, None
@@ -556,7 +607,7 @@ def get_colors(act):
     players_cols = Team.COLS
     painted_cards = []
     for el in range(stab_c):
-        painted_cards.append('l_grey' if el != 0 else choices(('red', 'gold'), (0.7, 0.3))[0])
+        painted_cards.append('l_grey' if el != 0 else choices(('red', 'gold'), (0.8, 0.2))[0])
     for el, t_col in zip(range(teams_num), players_cols):
         for el_t in range(cards_groups):
             painted_cards.append(t_col)
@@ -567,7 +618,7 @@ def get_colors(act):
 
 
 def get_words():
-    with open('nouns.txt', 'r') as n_file:
+    with open('source/nouns.txt', 'r') as n_file:
         all_nouns = [line[:-1] for line in n_file.readlines()]
     return [noun[0].upper() + noun[1:] for noun in sample(all_nouns, k=Card.C_QTY)]
 
@@ -605,7 +656,7 @@ if __name__ == "__main__":
         # pregame setup
         locker = mp.Lock()
         gen_teams()
-        act_teams = mp.Array('b', fst_move(Team.T_NUM))
+        act_teams = mn.list(fst_move(Team.T_NUM))  # mp.Array('b', fst_move(Team.T_NUM))
         gen_cards()
         cards_colors = get_colors(act_teams)
         game = Game()
@@ -613,14 +664,14 @@ if __name__ == "__main__":
         # shared items
         words, colors, icons = mn.list(get_words()), mn.list(cards_colors), mn.list(icon_fits(cards_colors))
         good_news = mn.Value('str', '')
-        running, restart = mp.Value('b', True), mp.Value('b', False)
+        running, restart, gm_pause = mp.Value('b', True), mp.Value('b', False), mp.Value('b', True)
         time_counter = mn.Value('int', 60)
 
         # Create two separate processes for each Pygame window
         gf_win = mp.Process(target=game.game_field, args=(running, locker, act_teams, restart,
-                                                          words, colors, icons, good_news, time_counter))
+                                                          words, colors, icons, good_news, time_counter, gm_pause))
         sf_win = mp.Process(target=game.speaker_field, args=(running, locker, act_teams, restart,
-                                                             words, colors, icons, good_news, time_counter))
+                                                             words, colors, icons, good_news, time_counter, gm_pause))
 
         # Start both processes
         gf_win.start()
